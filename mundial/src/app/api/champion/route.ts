@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 
+// Definimos la interfaz para evitar el error de "never"
+interface UserRow {
+  id: string;
+  name?: string;
+}
+
 // Endpoint GET /api/champion
 // Devuelve el candidato a campeón del usuario autenticado (si ya existe).
 export async function GET(request: Request) {
@@ -22,12 +28,14 @@ export async function GET(request: Request) {
 
   const authUserId = authData.user.id;
 
+  // Aplicamos el tipo UserRow a la respuesta de la consulta
   const { data: user } = await supabase
     .from("users")
     .select("id")
     .eq("auth_user_id", authUserId)
-    .maybeSingle();
+    .maybeSingle() as { data: UserRow | null };
 
+  // Ahora TypeScript sabe que user puede tener un .id
   if (!user?.id) {
     return NextResponse.json({ championTeam: null }, { status: 200 });
   }
@@ -82,7 +90,7 @@ export async function POST(request: Request) {
     .from("users")
     .select("id, name")
     .eq("auth_user_id", authUserId)
-    .maybeSingle();
+    .maybeSingle() as { data: UserRow | null, error: any };
 
   if (userSelectError && userSelectError.code !== "PGRST116") {
     return NextResponse.json(
@@ -91,14 +99,14 @@ export async function POST(request: Request) {
     );
   }
 
-  let userId = existingUser?.id as string | undefined;
+  let userId = existingUser?.id;
 
   if (!userId) {
     const { data: newUser, error: insertUserError } = await supabase
       .from("users")
       .insert({ name: userName, auth_user_id: authUserId })
       .select("id")
-      .single();
+      .single() as { data: UserRow | null, error: any };
 
     if (insertUserError || !newUser) {
       return NextResponse.json(
@@ -107,7 +115,7 @@ export async function POST(request: Request) {
       );
     }
 
-    userId = newUser.id as string;
+    userId = newUser.id;
   } else if (existingUser?.name !== userName) {
     await supabase.from("users").update({ name: userName }).eq("id", userId);
   }
@@ -157,4 +165,3 @@ export async function POST(request: Request) {
 
   return NextResponse.json({ ok: true, locked: true, championTeam });
 }
-
