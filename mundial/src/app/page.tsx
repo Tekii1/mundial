@@ -7,10 +7,10 @@ export default function Home() {
       {/* Bloque principal con título y descripción de la app */}
       <div className="max-w-2xl space-y-4">
         <p className="text-sm font-medium uppercase tracking-[0.25em] text-emerald-400">
-          Mundial · Quiniela familiar
+          Mundial 2026
         </p>
         <h1 className="text-balance text-4xl font-semibold leading-tight sm:text-5xl">
-          Bienvenidos a la Quiniela Familiar de la familia.
+          Bienvenidos a la Quiniela Familiar.
         </h1>
         <p className="text-pretty text-base text-neutral-300 sm:text-lg">
           Crea las predicciones de cada partido y mira el ranking en tiempo real
@@ -24,7 +24,7 @@ export default function Home() {
           href="/quiniela"
           className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-6 py-2.5 text-sm font-semibold text-neutral-950 shadow-lg shadow-emerald-500/25 transition hover:bg-emerald-400"
         >
-          Empezar una quiniela
+          Empieza tu quiniela
         </Link>
         <Link
           href="/ranking"

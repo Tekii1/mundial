@@ -1,57 +1,27 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 
-type User = {
-  id: string;
-  name: string;
-};
+type User = { id: string; name: string };
+type Match = { id: string; home_score: number | null; away_score: number | null; home_team: string; away_team: string; status: string; group_or_phase: string };
+type Prediction = { user_id: string; match_id: string; predicted_home_score: number; predicted_away_score: number };
 
-type Match = {
-  id: string;
-  home_score: number | null;
-  away_score: number | null;
-};
-
-type Prediction = {
-  user_id: string;
-  match_id: string;
-  predicted_home_score: number;
-  predicted_away_score: number;
-};
-
-// Calcula los puntos de una predicción contra el resultado real
 function calculatePoints(
   predictedHome: number,
   predictedAway: number,
   realHome: number | null,
   realAway: number | null
 ): { points: number; exact: boolean; correct: boolean } {
-  if (realHome === null || realAway === null) {
-    return { points: 0, exact: false, correct: false };
-  }
+  if (realHome === null || realAway === null) return { points: 0, exact: false, correct: false };
 
-  const exact =
-    predictedHome === realHome && predictedAway === realAway;
+  const exact = predictedHome === realHome && predictedAway === realAway;
+  const predictedSign = Math.sign(predictedHome - predictedAway);
+  const realSign = Math.sign(realHome - realAway);
 
-  const predictedDiff = predictedHome - predictedAway;
-  const realDiff = realHome - realAway;
-
-  const predictedSign = Math.sign(predictedDiff);
-  const realSign = Math.sign(realDiff);
-
-  if (exact) {
-    return { points: 3, exact: true, correct: true };
-  }
-
-  if (predictedSign === realSign) {
-    return { points: 1, exact: false, correct: true };
-  }
-
+  if (exact) return { points: 3, exact: true, correct: true };
+  if (predictedSign === realSign) return { points: 1, exact: false, correct: true };
   return { points: 0, exact: false, correct: false };
 }
 
-// Endpoint GET /api/ranking
-// Devuelve la tabla de posiciones calculada a partir de users, matches y predictions
 export async function GET() {
   const supabase = getSupabaseClient();
 
@@ -59,83 +29,61 @@ export async function GET() {
     { data: users, error: usersError },
     { data: matches, error: matchesError },
     { data: predictions, error: predictionsError },
-    { data: championInfo, error: championInfoError },
     { data: championPreds, error: championPredsError },
-  ] =
-    await Promise.all([
-      supabase.from("users").select("id, name"),
-      supabase
-        .from("matches")
-        .select("id, home_score, away_score"),
-      supabase
-        .from("predictions")
-        .select(
-          "user_id, match_id, predicted_home_score, predicted_away_score"
-        ),
-      // Campeón real (cuando exista)
-      supabase.from("tournament_info").select("champion_team").eq("id", 1).maybeSingle(),
-      // Candidatos de campeón por usuario
-      supabase.from("tournament_predictions").select("user_id, champion_team"),
-    ]);
+  ] = await Promise.all([
+    supabase.from("users").select("id, name"),
+    supabase.from("matches").select("id, home_score, away_score, home_team, away_team, status, group_or_phase"),
+    supabase.from("predictions").select("user_id, match_id, predicted_home_score, predicted_away_score"),
+    supabase.from("tournament_predictions").select("user_id, champion_team"),
+  ]);
 
-  if (
-    usersError ||
-    matchesError ||
-    predictionsError ||
-    championInfoError ||
-    championPredsError
-  ) {
-    return NextResponse.json(
-      {
-        message: "Error al obtener datos para el ranking",
-        usersError: usersError?.message,
-        matchesError: matchesError?.message,
-        predictionsError: predictionsError?.message,
-        championInfoError: championInfoError?.message,
-        championPredsError: championPredsError?.message,
-      },
-      { status: 500 }
-    );
+  if (usersError || matchesError || predictionsError || championPredsError) {
+    return NextResponse.json({ message: "Error al obtener datos" }, { status: 500 });
   }
 
-  const usersById = new Map<string, User>();
+  // --- DETECCIÓN AUTOMÁTICA DEL CAMPEÓN REAL ---
+  // Buscamos el partido que contenga "Final" en su fase y que haya terminado (FT)
+  const finalMatch = (matches as Match[] || []).find(m => 
+    m.group_or_phase.toLowerCase().includes("final") && 
+    !m.group_or_phase.toLowerCase().includes("semi") &&
+    !m.group_or_phase.toLowerCase().includes("quarter") &&
+    m.status === "FT"
+  );
+
+  let realChampion: string | null = null;
+  if (finalMatch && finalMatch.home_score !== null && finalMatch.away_score !== null) {
+    if (finalMatch.home_score > finalMatch.away_score) realChampion = finalMatch.home_team;
+    else if (finalMatch.away_score > finalMatch.home_score) realChampion = finalMatch.away_team;
+    // Nota: Si empatan, la API-Football actualiza los goles tras penales o puedes manualizar este dato.
+  }
+
+  const results = new Map<string, any>();
+
+  // Mapa de lo que cada usuario eligió como campeón
+  const pickedByUser = new Map<string, string>();
+  (championPreds ?? []).forEach((r) => pickedByUser.set(r.user_id, r.champion_team));
+
+  // Inicializar ranking
   (users ?? []).forEach((u) => {
-    usersById.set(u.id, u as User);
-  });
-
-  const matchesById = new Map<string, Match>();
-  (matches ?? []).forEach((m) => {
-    matchesById.set(m.id, m as Match);
-  });
-
-  type Acc = {
-    userId: string;
-    name: string;
-    totalPoints: number;
-    exactCount: number;
-    correctCount: number;
-  };
-
-  const results = new Map<string, Acc>();
-
-  // Inicializamos el ranking con todos los usuarios (aunque tengan 0 puntos)
-  (users ?? []).forEach((u) => {
-    const user = u as User;
-    results.set(user.id, {
-      userId: user.id,
-      name: user.name,
+    results.set(u.id, {
+      userId: u.id,
+      name: u.name,
       totalPoints: 0,
       exactCount: 0,
       correctCount: 0,
+      championTeam: pickedByUser.get(u.id) || null,
+      guessedChampion: false
     });
   });
 
+  const matchesById = new Map<string, Match>();
+  (matches ?? []).forEach((m) => matchesById.set(m.id, m as Match));
+
+  // Calcular puntos por partidos
   (predictions ?? []).forEach((p) => {
     const pred = p as Prediction;
-    const user = usersById.get(pred.user_id);
     const match = matchesById.get(pred.match_id);
-
-    if (!user || !match) return;
+    if (!match) return;
 
     const { points, exact, correct } = calculatePoints(
       pred.predicted_home_score,
@@ -144,47 +92,29 @@ export async function GET() {
       match.away_score
     );
 
-    const acc = results.get(user.id)!;
-    acc.totalPoints += points;
-    if (exact) acc.exactCount += 1;
-    if (correct) acc.correctCount += 1;
+    const acc = results.get(pred.user_id);
+    if (acc) {
+      acc.totalPoints += points;
+      if (exact) acc.exactCount += 1;
+      if (correct) acc.correctCount += 1;
+    }
   });
 
-  const ranking = Array.from(results.values()).sort((a, b) => {
-    if (b.totalPoints !== a.totalPoints) {
-      return b.totalPoints - a.totalPoints;
-    }
-    // Desempate por más marcadores exactos
-    if (b.exactCount !== a.exactCount) {
-      return b.exactCount - a.exactCount;
-    }
-    // Segundo desempate por más partidos acertados
-    return b.correctCount - a.correctCount;
-  });
-
-  // Bonus de campeón (+20) si ya se definió el campeón real del torneo
-  const realChampion = (championInfo as any)?.champion_team as string | null | undefined;
+  // --- APLICAR BONUS DE CAMPEÓN ---
   if (realChampion) {
-    const pickedByUser = new Map<string, string>();
-    (championPreds ?? []).forEach((r) => {
-      pickedByUser.set((r as any).user_id, (r as any).champion_team);
-    });
-
-    ranking.forEach((row) => {
-      const picked = pickedByUser.get(row.userId);
-      if (picked && picked === realChampion) {
-        row.totalPoints += 20;
+    results.forEach((user) => {
+      if (user.championTeam && user.championTeam.toLowerCase().trim() === realChampion?.toLowerCase().trim()) {
+        user.totalPoints += 20; // Bonus de 20 puntos
+        user.guessedChampion = true;
       }
-    });
-
-    // Re-ordenamos porque el bonus puede cambiar posiciones
-    ranking.sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-      if (b.exactCount !== a.exactCount) return b.exactCount - a.exactCount;
-      return b.correctCount - a.correctCount;
     });
   }
 
+  const ranking = Array.from(results.values()).sort((a, b) => {
+    if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+    if (b.exactCount !== a.exactCount) return b.exactCount - a.exactCount;
+    return b.correctCount - a.correctCount;
+  });
+
   return NextResponse.json(ranking);
 }
-
