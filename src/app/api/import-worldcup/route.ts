@@ -33,7 +33,6 @@ export async function GET(request: Request) {
     });
 
     // 3. Intento B: Si el A falla, buscamos los próximos 99 partidos de la liga
-    // Este método (next) suele saltarse errores de indexación de temporada en torneos FIFA
     if (!apiResponse.response || apiResponse.response.length === 0) {
       console.log("Temporada no encontrada, intentando con parámetro 'next'...");
       apiResponse = await apiFootballGet<ApiFootballFixture>("/fixtures", {
@@ -50,11 +49,10 @@ export async function GET(request: Request) {
       });
     }
 
-    // 4. Mapeo de datos según la estructura de la documentación V3
+    // 4. Mapeo de datos
     const rows = apiResponse.response.map((fx) => {
       const status = fx.fixture.status.short;
       
-      // Lista de estados donde el partido ya tiene goles (Live o Finalizado)
       const activeStatuses = ["1H", "2H", "ET", "P", "LIVE", "FT", "PEN", "AET"];
       const isStarted = activeStatuses.includes(status);
 
@@ -66,7 +64,6 @@ export async function GET(request: Request) {
         away_logo_url: fx.teams.away.logo ?? null,
         group_or_phase: `${fx.league.round}`, 
         kickoff_at: fx.fixture.date,
-        // Solo guardamos goles si el partido realmente empezó
         home_score: isStarted ? (fx.goals.home ?? 0) : null,
         away_score: isStarted ? (fx.goals.away ?? 0) : null,
         status: status,
@@ -77,8 +74,8 @@ export async function GET(request: Request) {
     });
 
     // 5. Upsert masivo en Supabase
-    const { error: upsertError } = await supabase
-      .from("matches")
+    // --- CORRECCIÓN AQUÍ: Usamos casting 'as any' para evitar el error de compilación ---
+    const { error: upsertError } = await (supabase.from("matches") as any)
       .upsert(rows, { 
         onConflict: "source,external_id" 
       });

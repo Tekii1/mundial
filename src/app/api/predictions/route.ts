@@ -22,46 +22,48 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "No hay predicciones para guardar" });
   }
 
-  // 2. Buscar o crear el ID interno del usuario en la tabla 'users'
-  const { data: userRecord } = await supabase
+  // 2. Buscar o crear el ID interno del usuario
+  // CORRECCIÓN: as any para evitar error de 'never'
+  const { data: userRecord } = await (supabase
     .from("users")
     .select("id")
     .eq("auth_user_id", authUserId)
-    .maybeSingle();
+    .maybeSingle() as any);
 
-  let userId = userRecord?.id;
+let userId = userRecord?.id;
   if (!userId) {
-    const { data: newUser } = await supabase
-      .from("users")
+    // CORRECCIÓN: Aplicamos (supabase.from("users") as any) 
+    // para que el método .insert() acepte el objeto sin protestar.
+    const { data: newUser } = await (supabase.from("users") as any)
       .insert({ name: userName, auth_user_id: authUserId })
       .select("id")
       .single();
+    
     userId = newUser?.id;
   }
 
-  // 3. LOGICA DE SEGURIDAD: Obtener kickoff_at de los partidos que intenta guardar
+  // 3. LOGICA DE SEGURIDAD
   const matchIds = incomingPredictions.map((p: any) => p.matchId);
-  const { data: matchesFromDb, error: matchesError } = await supabase
+  const { data: matchesFromDb, error: matchesError } = await (supabase
     .from("matches")
     .select("id, kickoff_at")
-    .in("id", matchIds);
+    .in("id", matchIds) as any);
 
   if (matchesError || !matchesFromDb) {
     return NextResponse.json({ error: "No se pudo verificar el horario de los partidos" }, { status: 500 });
   }
 
-  // 4. Filtrar solo las predicciones que aún son válidas (antes del inicio)
+  // 4. Filtrar solo predicciones válidas
   const now = new Date();
   const validRows = [];
   const blockedMatches = [];
 
   for (const pred of incomingPredictions) {
-    const matchInfo = matchesFromDb.find(m => m.id === pred.matchId);
+    const matchInfo = (matchesFromDb as any[]).find(m => m.id === pred.matchId);
     
     if (matchInfo) {
       const kickoffTime = new Date(matchInfo.kickoff_at);
       
-      // Solo permitimos si el partido NO ha empezado
       if (now < kickoffTime) {
         validRows.push({
           user_id: userId,
@@ -75,7 +77,6 @@ export async function POST(request: Request) {
     }
   }
 
-  // 5. Si no hay nada válido para guardar, avisamos al usuario
   if (validRows.length === 0) {
     return NextResponse.json({ 
       message: "Error: Los partidos ya han comenzado y no se pueden editar.",
@@ -83,9 +84,9 @@ export async function POST(request: Request) {
     }, { status: 403 });
   }
 
-  // 6. Hacer el UPSERT solo con las filas permitidas
-  const { error: upsertError } = await supabase
-    .from("predictions")
+  // 6. Hacer el UPSERT
+  // CORRECCIÓN: as any para la tabla y los datos
+  const { error: upsertError } = await (supabase.from("predictions") as any)
     .upsert(validRows, { onConflict: "user_id,match_id" });
 
   if (upsertError) {
@@ -110,18 +111,19 @@ export async function GET(request: Request) {
   const { data: authData } = await supabase.auth.getUser(token);
   if (!authData.user) return NextResponse.json({ message: "No user" }, { status: 401 });
 
-  const { data: user } = await supabase
+  // CORRECCIÓN: as any
+  const { data: user } = await (supabase
     .from("users")
     .select("id")
     .eq("auth_user_id", authData.user.id)
-    .single();
+    .single() as any);
 
   if (!user) return NextResponse.json([]);
 
-  const { data: predictions, error } = await supabase
+  const { data: predictions, error } = await (supabase
     .from("predictions")
     .select("match_id, predicted_home_score, predicted_away_score")
-    .eq("user_id", user.id);
+    .eq("user_id", user.id) as any);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 

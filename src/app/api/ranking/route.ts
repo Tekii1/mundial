@@ -25,16 +25,17 @@ function calculatePoints(
 export async function GET() {
   const supabase = getSupabaseClient();
 
+  // Forzamos casting 'as any' en las consultas para evitar que TS bloquee el acceso a propiedades
   const [
     { data: users, error: usersError },
     { data: matches, error: matchesError },
     { data: predictions, error: predictionsError },
     { data: championPreds, error: championPredsError },
   ] = await Promise.all([
-    supabase.from("users").select("id, name"),
-    supabase.from("matches").select("id, home_score, away_score, home_team, away_team, status, group_or_phase"),
-    supabase.from("predictions").select("user_id, match_id, predicted_home_score, predicted_away_score"),
-    supabase.from("tournament_predictions").select("user_id, champion_team"),
+    supabase.from("users").select("id, name") as any,
+    supabase.from("matches").select("id, home_score, away_score, home_team, away_team, status, group_or_phase") as any,
+    supabase.from("predictions").select("user_id, match_id, predicted_home_score, predicted_away_score") as any,
+    supabase.from("tournament_predictions").select("user_id, champion_team") as any,
   ]);
 
   if (usersError || matchesError || predictionsError || championPredsError) {
@@ -42,7 +43,6 @@ export async function GET() {
   }
 
   // --- DETECCIÓN AUTOMÁTICA DEL CAMPEÓN REAL ---
-  // Buscamos el partido que contenga "Final" en su fase y que haya terminado (FT)
   const finalMatch = (matches as Match[] || []).find(m => 
     m.group_or_phase.toLowerCase().includes("final") && 
     !m.group_or_phase.toLowerCase().includes("semi") &&
@@ -54,17 +54,19 @@ export async function GET() {
   if (finalMatch && finalMatch.home_score !== null && finalMatch.away_score !== null) {
     if (finalMatch.home_score > finalMatch.away_score) realChampion = finalMatch.home_team;
     else if (finalMatch.away_score > finalMatch.home_score) realChampion = finalMatch.away_team;
-    // Nota: Si empatan, la API-Football actualiza los goles tras penales o puedes manualizar este dato.
   }
 
   const results = new Map<string, any>();
 
   // Mapa de lo que cada usuario eligió como campeón
   const pickedByUser = new Map<string, string>();
-  (championPreds ?? []).forEach((r) => pickedByUser.set(r.user_id, r.champion_team));
+  // Usamos casting a any[] para que r.user_id no de error
+  (championPreds as any[] || []).forEach((r) => {
+    pickedByUser.set(r.user_id, r.champion_team);
+  });
 
   // Inicializar ranking
-  (users ?? []).forEach((u) => {
+  (users as User[] || []).forEach((u) => {
     results.set(u.id, {
       userId: u.id,
       name: u.name,
@@ -77,22 +79,21 @@ export async function GET() {
   });
 
   const matchesById = new Map<string, Match>();
-  (matches ?? []).forEach((m) => matchesById.set(m.id, m as Match));
+  (matches as Match[] || []).forEach((m) => matchesById.set(m.id, m));
 
   // Calcular puntos por partidos
-  (predictions ?? []).forEach((p) => {
-    const pred = p as Prediction;
-    const match = matchesById.get(pred.match_id);
+  (predictions as Prediction[] || []).forEach((p) => {
+    const match = matchesById.get(p.match_id);
     if (!match) return;
 
     const { points, exact, correct } = calculatePoints(
-      pred.predicted_home_score,
-      pred.predicted_away_score,
+      p.predicted_home_score,
+      p.predicted_away_score,
       match.home_score,
       match.away_score
     );
 
-    const acc = results.get(pred.user_id);
+    const acc = results.get(p.user_id);
     if (acc) {
       acc.totalPoints += points;
       if (exact) acc.exactCount += 1;

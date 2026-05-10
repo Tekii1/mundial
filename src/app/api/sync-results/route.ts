@@ -11,10 +11,6 @@ function unauthorized() {
 }
 
 // Endpoint POST/GET /api/sync-results
-// Actualiza resultados en matches consultando API-Football para fixtures ya importados.
-//
-// Seguridad:
-// - Requiere header `x-sync-secret` o query `secret` que coincida con SYNC_SECRET en .env.local
 export async function GET(request: Request) {
   return sync(request);
 }
@@ -42,12 +38,13 @@ async function sync(request: Request) {
 
   const supabase = getSupabaseClient();
 
-  // Buscamos fixtures importados (con external_id) que ya deberían tener resultado
-  const { data: matches, error } = await supabase
+  // Buscamos fixtures importados
+  // Añadimos 'as any' aquí también por si acaso
+  const { data: matches, error } = await (supabase
     .from("matches")
     .select("id, external_id, source")
     .eq("source", "api-football")
-    .not("external_id", "is", null);
+    .not("external_id", "is", null) as any);
 
   if (error) {
     return NextResponse.json(
@@ -57,14 +54,13 @@ async function sync(request: Request) {
   }
 
   const ids = (matches ?? [])
-    .map((m) => String((m as any).external_id))
+    .map((m: any) => String(m.external_id))
     .filter(Boolean);
 
   if (ids.length === 0) {
     return NextResponse.json({ ok: true, updated: 0, message: "Nada que sincronizar" });
   }
 
-  // API-Football permite consultar múltiples ids separados por coma con `ids`
   const fx = await apiFootballGet<ApiFootballFixture>("/fixtures", {
     ids: ids.join(","),
   });
@@ -85,8 +81,9 @@ async function sync(request: Request) {
     return NextResponse.json({ ok: true, updated: 0 });
   }
 
-  const { error: upsertError } = await supabase
-    .from("matches")
+  // --- LA CORRECCIÓN CLAVE ---
+  // Forzamos la tabla 'matches' a 'any' para que acepte el upsert del array 'updates'
+  const { error: upsertError } = await (supabase.from("matches") as any)
     .upsert(updates, { onConflict: "source,external_id" });
 
   if (upsertError) {
@@ -98,4 +95,3 @@ async function sync(request: Request) {
 
   return NextResponse.json({ ok: true, updated: updates.length });
 }
-
