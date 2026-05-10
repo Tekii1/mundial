@@ -12,4 +12,4 @@ jobs:
     steps:
       - name: Llamar a la API de Importación
         run: |
-          curl -X GET "https://TU-PROYECTO.vercel.app/api/import-worldcup?secret=${{ secrets.SYNC_SECRET }}"
+          curl -X GET "https://mundial-113xdwpsf-tekii1s-projects.vercel.app//api/import-worldcup?secret=${{ secrets.SYNC_SECRET }}"
