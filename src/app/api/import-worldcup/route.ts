@@ -2,24 +2,19 @@ import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { apiFootballGet, ApiFootballFixture } from "@/lib/apiFootball";
 
+// Evitamos el cache para tener datos en tiempo real
+export const revalidate = 0;
+
 function unauthorized() {
   return NextResponse.json({ message: "No autorizado" }, { status: 401 });
 }
 
 export async function GET(request: Request) {
+  // 1. Validación de Seguridad
   const secret = process.env.SYNC_SECRET;
-  if (!secret) {
-    return NextResponse.json(
-      { message: "Falta SYNC_SECRET en el servidor" },
-      { status: 500 }
-    );
-  }
-
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
   const headerSecret = request.headers.get("x-sync-secret");
-  
-  // Detección automática de Vercel Cron Job
   const isVercelCron = request.headers.get("auth-action") === "cron-job";
 
   if (querySecret !== secret && headerSecret !== secret && !isVercelCron) {
@@ -27,61 +22,86 @@ export async function GET(request: Request) {
   }
 
   const supabase = getSupabaseClient();
+  const LEAGUE_ID = 1; // FIFA World Cup
+  const SEASON = 2026;
 
-  // Traemos los datos de la API
-  const data = await apiFootballGet<ApiFootballFixture>("/fixtures", {
-    league: 1,
-    season: 2022,
-  });
-
-  if (!data.response || data.response.length === 0) {
-    return NextResponse.json({ ok: true, imported: 0, message: "No se recibieron partidos de la API" });
-  }
-
-  const rows = data.response.map((fx) => {
-    // LÓGICA DE GOLES: 
-    // Si el partido no ha empezado (NS), los goles deben ser null o 0 para la quiniela.
-    // Si ya terminó (FT) o está en juego, forzamos que el null sea 0 para evitar errores.
-    const status = fx.fixture.status.short;
-    const isStarted = !["NS", "TBD"].includes(status);
-
-    return {
-      home_team: fx.teams.home.name,
-      away_team: fx.teams.away.name,
-      group_or_phase: `${fx.league.name} · ${fx.league.round}`,
-      kickoff_at: fx.fixture.date,
-      // Si el partido empezó y la API manda null, ponemos 0. 
-      // Si no ha empezado, mantenemos null para no confundir a la quiniela.
-      home_score: isStarted ? (fx.goals.home ?? 0) : null,
-      away_score: isStarted ? (fx.goals.away ?? 0) : null,
-      home_logo_url: fx.teams.home.logo ?? null,
-      away_logo_url: fx.teams.away.logo ?? null,
-      source: "api-football",
-      external_id: String(fx.fixture.id),
-      external_league: fx.league.id,
-      external_season: fx.league.season,
-      // Guardamos el estado por si quieres usarlo luego (FT, NS, 1H, etc)
-      status: status 
-    };
-  });
-
-  const { error } = await supabase
-    .from("matches")
-    .upsert(rows, { 
-      onConflict: "source,external_id",
-      // Esto asegura que si el partido ya existe, se actualicen los goles y el estado
+  try {
+    // 2. Intento A: Búsqueda estándar por Liga y Temporada
+    let apiResponse = await apiFootballGet<ApiFootballFixture>("/fixtures", {
+      league: LEAGUE_ID,
+      season: SEASON,
     });
 
-  if (error) {
+    // 3. Intento B: Si el A falla, buscamos los próximos 99 partidos de la liga
+    // Este método (next) suele saltarse errores de indexación de temporada en torneos FIFA
+    if (!apiResponse.response || apiResponse.response.length === 0) {
+      console.log("Temporada no encontrada, intentando con parámetro 'next'...");
+      apiResponse = await apiFootballGet<ApiFootballFixture>("/fixtures", {
+        league: LEAGUE_ID,
+        next: 99,
+      });
+    }
+
+    if (!apiResponse.response || apiResponse.response.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        imported: 0,
+        message: `La API de Football aún no devuelve partidos para la liga ${LEAGUE_ID}.`,
+      });
+    }
+
+    // 4. Mapeo de datos según la estructura de la documentación V3
+    const rows = apiResponse.response.map((fx) => {
+      const status = fx.fixture.status.short;
+      
+      // Lista de estados donde el partido ya tiene goles (Live o Finalizado)
+      const activeStatuses = ["1H", "2H", "ET", "P", "LIVE", "FT", "PEN", "AET"];
+      const isStarted = activeStatuses.includes(status);
+
+      return {
+        external_id: String(fx.fixture.id),
+        home_team: fx.teams.home.name,
+        away_team: fx.teams.away.name,
+        home_logo_url: fx.teams.home.logo ?? null,
+        away_logo_url: fx.teams.away.logo ?? null,
+        group_or_phase: `${fx.league.round}`, 
+        kickoff_at: fx.fixture.date,
+        // Solo guardamos goles si el partido realmente empezó
+        home_score: isStarted ? (fx.goals.home ?? 0) : null,
+        away_score: isStarted ? (fx.goals.away ?? 0) : null,
+        status: status,
+        source: "api-football",
+        external_league: fx.league.id,
+        external_season: fx.league.season,
+      };
+    });
+
+    // 5. Upsert masivo en Supabase
+    const { error: upsertError } = await supabase
+      .from("matches")
+      .upsert(rows, { 
+        onConflict: "source,external_id" 
+      });
+
+    if (upsertError) {
+      throw new Error(`Error en Supabase: ${upsertError.message}`);
+    }
+
+    return NextResponse.json({
+      ok: true,
+      imported: rows.length,
+      message: "Sincronización completada exitosamente",
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error("Error crítico en import-worldcup:", err);
     return NextResponse.json(
-      { message: "Error importando Mundial", error: error.message },
+      {
+        message: "Error interno en el servidor",
+        error: err instanceof Error ? err.message : "Error desconocido",
+      },
       { status: 500 }
     );
   }
-
-  return NextResponse.json({ 
-    ok: true, 
-    imported: rows.length,
-    timestamp: new Date().toISOString() 
-  });
 }

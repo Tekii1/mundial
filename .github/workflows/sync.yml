@@ -1,0 +1,15 @@
+name: Sincronizar Resultados Mundial
+
+on:
+  schedule:
+    # Se ejecuta cada 15 minutos (Formato Cron)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Esto permite que tú lo ejecutes manualmente si quieres
+
+jobs:
+  update-scores:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar a la API de Importación
+        run: |
+          curl -X GET "https://TU-PROYECTO.vercel.app/api/import-worldcup?secret=${{ secrets.SYNC_SECRET }}"
